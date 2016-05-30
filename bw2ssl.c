@@ -5,8 +5,10 @@
 #include <string.h>
 #include <unistd.h>
 #include <stdbool.h>
+#include <fcntl.h>
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <sys/stat.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
@@ -25,7 +27,8 @@ static int (*orig_accept)(int sockfd, struct sockaddr *addr, socklen_t *addrlen)
 // array of socket FDs that we emulate over bosswave
 static int socket_fds[1024];
 static bool initialized = false;
-static char* entity;
+static char* entity_file = "currently path to your entity file";
+static char entity[256];
 static int bw_sock;
 static struct sockaddr_in bw_server;
 
@@ -36,8 +39,10 @@ static void init(void)
     memset(socket_fds, -1, sizeof(socket_fds));
 
     // load in original functions
+    orig_open=dlsym(RTLD_NEXT, "open");
     orig_socket=dlsym(RTLD_NEXT, "socket");
     orig_bind=dlsym(RTLD_NEXT, "bind");
+    orig_recvfrom=dlsym(RTLD_NEXT, "recvfrom");
     orig_listen=dlsym(RTLD_NEXT, "listen");
     orig_read=dlsym(RTLD_NEXT, "read");
     orig_close=dlsym(RTLD_NEXT, "close");
@@ -58,9 +63,28 @@ static void init(void)
     }
 
     // set up our entity
-    entity = getenv("BW2_DEFAULT_ENITTY");
-    printf("entity %s\n", entity);
-
+    //entity = getenv("BW2_DEFAULT_ENITTY");
+    printf("entity %s\n", entity_file);
+    // retrieve entity
+    struct stat entity_stat;
+    if (stat(entity_file, &entity_stat) < 0)
+    {
+        printf("Error getting entity file %s\n", entity_file);
+    }
+    int entity_size = (int)entity_stat.st_size;
+    printf("entity is %i bytes\n", entity_size);
+    // read entity
+    int entity_fd = orig_open(entity_file, O_RDONLY);
+    if (entity_fd < 0)
+    {
+        printf("Could not open entity file %s\n", entity_file);
+    }
+    printf("opened entity fd %d\n", entity_fd);
+    int num_read = orig_read(entity_fd, &entity, entity_size);
+    if (num_read < entity_size)
+    {
+        printf("Could not read entity!\n");
+    }
 
     initialized = true;
 }
@@ -144,9 +168,3 @@ int accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen)
     printf(">> called accept <<\n");
     return orig_accept(sockfd, addr, addrlen);
 }
-
-// override READ. Check if the fd is a socket and redidrect it
-// listen
-// accept
-// close
-// fstat
