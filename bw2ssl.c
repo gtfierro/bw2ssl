@@ -72,6 +72,14 @@ static void init(void)
         printf("Could not connect to local BW\n");
     }
 
+    int numread = 0;
+    char buf[512];
+    while (numread == 0)
+    {
+        numread = orig_read(bw_sock, buf, 1024);
+    }
+    printf("from bw sock>>>%.*s",numread,buf);
+
     // set up our entity
     //entity = getenv("BW2_DEFAULT_ENITTY");
     printf("entity %s\n", entity_file);
@@ -81,7 +89,8 @@ static void init(void)
     {
         printf("Error getting entity file %s\n", entity_file);
     }
-    int entity_size = (int)entity_stat.st_size - 1;
+    int entity_size = (int)entity_stat.st_size;
+
     printf("entity is %i bytes\n", entity_size);
     // read entity
     int entity_fd = orig_open(entity_file, O_RDONLY);
@@ -90,29 +99,32 @@ static void init(void)
         printf("Could not open entity file %s\n", entity_file);
     }
     printf("opened entity fd %d\n", entity_fd);
+
     int num_read = orig_read(entity_fd, &entity, entity_size);
     if (num_read < entity_size)
     {
         printf("Could not read entity!\n");
     }
 
-    char buf[512];
+    entity_size--;
+
     int written = 0;
     written += sprintf(buf, "sete %010d %010d\npo :50 %d\n", 0, 1, entity_size);
-    memcpy(buf+written, entity, entity_size);
-    written += entity_size-10;
+    memcpy(buf+written, entity+1, entity_size);
+    written += entity_size;
     written += sprintf(buf+written, "\nend\n");
     if (orig_write(bw_sock, buf, written) != written)
     {
         printf("Unsuccessfully wrote entity to router\n");
     }
-    //printf("%.*s",written,buf);
-    int numread = 0;
+    printf("%.*s",written,buf);
+
+    numread = 0;
     while (numread == 0)
     {
         numread = orig_read(bw_sock, buf, 1024);
     }
-    printf(">>>%.*s",numread,buf);
+    printf("from bw sock>>>%.*s",numread,buf);
 
     initialized = true;
 }
@@ -227,7 +239,7 @@ static int publish(int bw_sock, const char *uri, const void *data, size_t count)
     written += sprintf(buf, "publ %010d %010d\n", 0, 2);
     written += sprintf(buf+written, "kv uri %zd\n%s\n", strlen(uri), uri);
     written += sprintf(buf+written, "kv autochain 4\ntrue\n");
-    written += sprintf(buf+written, "po 64.0.1.0: %zd\n", count);
+    written += sprintf(buf+written, "po 1.0.1.1: %zd\n", count);
     memcpy(buf+written, data, count);
     written += count;
     written += sprintf(buf+written, "\nend\n");
