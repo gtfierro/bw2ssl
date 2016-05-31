@@ -20,14 +20,18 @@ static ssize_t (*orig_recvfrom)(int socket, void *buffer, size_t length, int fla
             struct sockaddr *address, socklen_t *address_len);
 static int (*orig_listen)(int sockfd, int backlog);
 static ssize_t (*orig_read)(int fd, void *buf, size_t count);
+static ssize_t (*orig_write)(int fd, const void *buf, size_t count);
 static int (*orig_close)(int fd);
 static int (*orig_accept)(int sockfd, struct sockaddr *addr, socklen_t *addrlen);
+static int (*orig_connect)(int sockfd, const struct sockaddr *addr,
+                   socklen_t addrlen);
 
 
 // array of socket FDs that we emulate over bosswave
 static int socket_fds[1024];
 static bool initialized = false;
-static char* entity_file = "currently path to your entity file";
+static const char* entity_file = "currently path to entity file";
+static const char* namespace = "namespace prefix, no /";
 static char entity[256];
 static int bw_sock;
 static struct sockaddr_in bw_server;
@@ -45,8 +49,10 @@ static void init(void)
     orig_recvfrom=dlsym(RTLD_NEXT, "recvfrom");
     orig_listen=dlsym(RTLD_NEXT, "listen");
     orig_read=dlsym(RTLD_NEXT, "read");
+    orig_write=dlsym(RTLD_NEXT, "write");
     orig_close=dlsym(RTLD_NEXT, "close");
     orig_accept=dlsym(RTLD_NEXT, "accept");
+    orig_connect=dlsym(RTLD_NEXT, "connect");
 
     bw_server.sin_family = AF_INET;
     bw_server.sin_port = htons(28589);
@@ -58,7 +64,7 @@ static void init(void)
     }
     printf("bw fd %i\n", bw_sock);
 
-    if (connect(bw_sock, (struct sockaddr *)&bw_server, sizeof(bw_server)) < 0) {
+    if (orig_connect(bw_sock, (struct sockaddr *)&bw_server, sizeof(bw_server)) < 0) {
         printf("Could not connect to local BW\n");
     }
 
@@ -155,6 +161,13 @@ ssize_t read(int fd, void *buf, size_t count)
     return orig_read(fd, buf, count);
 }
 
+ssize_t write(int fd, const void *buf, size_t count)
+{
+    if(!initialized) init();
+    printf(">> called write <<\n");
+    return orig_write(fd, buf, count);
+}
+
 int close(int fd)
 {
     if(!initialized) init();
@@ -167,4 +180,16 @@ int accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen)
     if(!initialized) init();
     printf(">> called accept <<\n");
     return orig_accept(sockfd, addr, addrlen);
+}
+
+int connect (int sockfd, const struct sockaddr *addr, socklen_t addrlen)
+{
+    if(!initialized) init();
+    printf(">> called connect <<\n");
+    struct sockaddr_in *ip_dst = (struct sockaddr_in*)addr;
+    char uri[128];
+    // TODO: probably switch to inet_ntop to handle both ipv4, ipv6
+    sprintf(uri, "%s/%s/%d", namespace, inet_ntoa(ip_dst->sin_addr), ip_dst->sin_port);
+    printf("uri for pub %s\n", uri);
+    return orig_connect(sockfd, addr, addrlen);
 }
