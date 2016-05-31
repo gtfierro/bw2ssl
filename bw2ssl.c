@@ -26,9 +26,13 @@ static int (*orig_accept)(int sockfd, struct sockaddr *addr, socklen_t *addrlen)
 static int (*orig_connect)(int sockfd, const struct sockaddr *addr,
                    socklen_t addrlen);
 
+static int publish(int bw_sock, const char *uri, const void *data, size_t count);
 
 // array of socket FDs that we emulate over bosswave
 static int socket_fds[1024];
+// index is FD. Content is the URI for that FD
+static const char* socket_uris[1024];
+
 static bool initialized = false;
 static const char* entity_file = "currently path to entity file";
 static const char* namespace = "namespace prefix, no /";
@@ -77,7 +81,7 @@ static void init(void)
     {
         printf("Error getting entity file %s\n", entity_file);
     }
-    int entity_size = (int)entity_stat.st_size;
+    int entity_size = (int)entity_stat.st_size - 1;
     printf("entity is %i bytes\n", entity_size);
     // read entity
     int entity_fd = orig_open(entity_file, O_RDONLY);
@@ -91,6 +95,24 @@ static void init(void)
     {
         printf("Could not read entity!\n");
     }
+
+    char buf[512];
+    int written = 0;
+    written += sprintf(buf, "sete %010d %010d\npo :50 %d\n", 0, 1, entity_size);
+    memcpy(buf+written, entity, entity_size);
+    written += entity_size-10;
+    written += sprintf(buf+written, "\nend\n");
+    if (orig_write(bw_sock, buf, written) != written)
+    {
+        printf("Unsuccessfully wrote entity to router\n");
+    }
+    //printf("%.*s",written,buf);
+    int numread = 0;
+    while (numread == 0)
+    {
+        numread = orig_read(bw_sock, buf, 1024);
+    }
+    printf(">>>%.*s",numread,buf);
 
     initialized = true;
 }
@@ -165,6 +187,7 @@ ssize_t write(int fd, const void *buf, size_t count)
 {
     if(!initialized) init();
     printf(">> called write <<\n");
+    publish(bw_sock, socket_uris[fd], buf, count);
     return orig_write(fd, buf, count);
 }
 
@@ -187,9 +210,37 @@ int connect (int sockfd, const struct sockaddr *addr, socklen_t addrlen)
     if(!initialized) init();
     printf(">> called connect <<\n");
     struct sockaddr_in *ip_dst = (struct sockaddr_in*)addr;
-    char uri[128];
+    char *uri = malloc(128);
     // TODO: probably switch to inet_ntop to handle both ipv4, ipv6
     sprintf(uri, "%s/%s/%d", namespace, inet_ntoa(ip_dst->sin_addr), ip_dst->sin_port);
     printf("uri for pub %s\n", uri);
+    socket_uris[sockfd] = uri;
     return orig_connect(sockfd, addr, addrlen);
+}
+
+
+//static ssize_t (*orig_write)(int fd, const void *buf, size_t count);
+static int publish(int bw_sock, const char *uri, const void *data, size_t count)
+{
+    char buf[512+count];
+    int written = 0;
+    written += sprintf(buf, "publ %010d %010d\n", 0, 2);
+    written += sprintf(buf+written, "kv uri %zd\n%s\n", strlen(uri), uri);
+    written += sprintf(buf+written, "kv autochain 4\ntrue\n");
+    written += sprintf(buf+written, "po 64.0.1.0: %zd\n", count);
+    memcpy(buf+written, data, count);
+    written += count;
+    written += sprintf(buf+written, "\nend\n");
+    printf("written: %i\n", written);
+    if (orig_write(bw_sock, buf, written) != written)
+    {
+        printf("Unsuccessfully wrote entity to router\n");
+    }
+    printf("%.*s",written,buf);
+    return written;
+    //printf "publ %010d %010d\n" 0 2 >&3
+    //echo -e "kv uri 14\n410.dev/foobar" >&3
+    //echo -e "kv autochain 4\ntrue" >&3
+    //echo -e "po 64.0.1.0: 5\nhello" >&3
+    //echo -e "end" >&3
 }
