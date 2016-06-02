@@ -57,7 +57,7 @@ void sig_handler(int signo)
     int errno;
     if (signo == SIGINT)
     {
-      while (pid = waitpid(-1, NULL, 0)) 
+      while (pid = waitpid(-1, NULL, 0))
       {
         printf("pid %d\n", pid);
         if (errno == ECHILD) break;
@@ -299,16 +299,22 @@ int accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen)
     {
         char buf[512];
         int num_read;
+        printf("subscribe to %s\n", socket_uris[sockfd]);
         subscribe(bw_sock, socket_uris[sockfd]);
         while (1) {
-            if (num_read=bwread(bw_sock, socket_uris[sockfd], buf, 2048) > 0)
+            num_read=bwread(bw_sock, socket_uris[sockfd], buf, 2048);
+            if (num_read > 0)
             {
-                printf("subscribe read %d bytes\n", num_read);
+                printf("subscribe read %i bytes %s\n", num_read, buf);
+                for (int i=0;i++;i<num_read)
+                {
+                    printf("%d",(char)buf[i]);
+                }
                 orig_write(dummy_fd, buf, num_read);
-                printf("written\n");
+                printf("::written\n");
             }
         }
-    } 
+    }
     else if (childPID < 0) // error
     {
         printf("couldn't fork!\n");
@@ -382,5 +388,7 @@ static int bwread(int bw_sock, const char *uri, void *data, size_t count)
     char buf[512+count];
     int numread = 0;
     numread = orig_read(bw_sock, buf, 1024);
-    return doread(buf, count);
+    int r = doread(buf, data, count);
+    printf("read %i\n", r);
+    return r;
 }

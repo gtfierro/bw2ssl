@@ -1,5 +1,8 @@
 package main
 
+/*
+#include <string.h>
+*/
 import "C"
 
 import (
@@ -11,6 +14,7 @@ import (
 	"log"
 	"strconv"
 	"strings"
+	"unsafe"
 )
 
 func main() {}
@@ -28,9 +32,23 @@ func helpme(stuff *C.char) int32 {
 }
 
 //export doread
-func doread(data *C.char, datalen C.int) int32 {
-	data = C.CString("asdf")
-	return 4
+func doread(input, data *C.char, datalen C.int) int32 {
+	buf := bytes.NewBufferString(C.GoString(input))
+	r := bufio.NewReader(buf)
+	f, e := loadFrameFromStream(r)
+	if e != nil {
+		log.Fatalf("load frame! %s\n", e)
+	}
+	log.Printf("%+v\n", f)
+	var length int32
+	for _, po := range f.POs {
+		if po.PONum == 16777473 { // 1.0.1.1
+			length = int32(len(po.PO))
+			C.memcpy(unsafe.Pointer(data), unsafe.Pointer(&po.PO[0]), C.size_t(length))
+			break
+		}
+	}
+	return length
 }
 
 const (
