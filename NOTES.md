@@ -41,6 +41,15 @@ Focusing on `/bin/nc`, it calls poll on the fd returned from the call to `accept
 we receive data on that port, we "signal" the dummy fd so that `poll` works as `nc` expects.
 This would probably also work for `select`.
 
+So: how do we create a dummy file descriptor? Worth trying `shm_open` to create a shared 
+memory region -- this is the fd we return from `accept`. When we receive data, we write
+to it.
+ALSO maybe try mkfifo
+
+We will probably fork in order to subscribe.
+
+Also look at: https://blog.gopheracademy.com/advent-2015/libc-hooking-go-shared-libraries/
+
 
 ## Left to do
 

@@ -7,12 +7,16 @@
 #include <stdbool.h>
 #include <signal.h>
 #include <poll.h>
+#include <sys/mman.h>
+#include <sys/wait.h>
 #include <fcntl.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <errno.h>
+#include "helper.h"
 
 static int(*orig_open)(const char *pathname, int flags);
 static int(*orig_socket)(int domain, int type, int protocol);
@@ -31,12 +35,14 @@ static int (*orig_connect)(int sockfd, const struct sockaddr *addr,
                    socklen_t addrlen);
 
 static int publish(int bw_sock, const char *uri, const void *data, size_t count);
-static int subscribe(int bw_sock, const char *uri, void *data, size_t count);
+static int subscribe(int bw_sock, const char *uri);
+static int bwread(int bw_sock, const char *uri, void *data, size_t count);
 
 // array of socket FDs that we emulate over bosswave
 static int socket_fds[1024];
 // index is FD. Content is the URI for that FD
 static const char* socket_uris[1024];
+static pid_t socket_pids[1024];
 
 static bool initialized = false;
 static const char* entity_file = "currently path to entity file";
@@ -45,11 +51,28 @@ static char entity[256];
 static int bw_sock;
 static struct sockaddr_in bw_server;
 
+void sig_handler(int signo)
+{
+    pid_t pid;
+    int errno;
+    if (signo == SIGINT)
+    {
+      while (pid = waitpid(-1, NULL, 0)) 
+      {
+        printf("pid %d\n", pid);
+        if (errno == ECHILD) break;
+      }
+      exit(0);
+    }
+}
+
+
 // performs the setups we need
 static void init(void)
 {
     // initialize array of emulated sockets
     memset(socket_fds, -1, sizeof(socket_fds));
+    memset(socket_pids, -1, sizeof(socket_pids));
 
     // load in original functions
     orig_open=dlsym(RTLD_NEXT, "open");
@@ -64,6 +87,8 @@ static void init(void)
     orig_close=dlsym(RTLD_NEXT, "close");
     orig_accept=dlsym(RTLD_NEXT, "accept");
     orig_connect=dlsym(RTLD_NEXT, "connect");
+
+    signal(SIGINT, sig_handler);
 
     bw_server.sin_family = AF_INET;
     bw_server.sin_port = htons(28589);
@@ -139,26 +164,20 @@ static void init(void)
 // returns true if we have the FD in our internal list
 static bool have_fd(int fd)
 {
-    for (int i=0; i<1024; i++)
-    {
-        if ((socket_fds[i]) == fd)
-        {
-            return true;
-        }
-    }
-    return false;
+    return socket_fds[fd] > 0;
 }
 
-static void add_fd(int fd)
+static int add_fd(int fd)
 {
-    for (int i=0; i<1024; i++)
-    {
-        if (socket_fds[i] < 0)
-        {
-            socket_fds[i] = fd;
-            return;
-        }
-    }
+    //TODO: free this on close
+    char *name = malloc(5);
+    sprintf(name, "/tmp/fd%d", fd);
+    unlink(name);
+    printf("mkfifo\n");
+    mkfifo(name, S_IRUSR | S_IWUSR);
+    printf("open\n");
+    socket_fds[fd] = open(name, O_RDWR | O_NONBLOCK);
+    return socket_fds[fd];
 }
 
 // gives us the file descriptor
@@ -178,9 +197,10 @@ int bind(int socket, const struct sockaddr *address, socklen_t address_len)
     printf(">> called bind: socket %d<<\n", socket);
     printf("have fd? %d\n", have_fd(socket));
     struct sockaddr_in *ip_src = (struct sockaddr_in*)address;
+    //TODO: free this on close
     char *uri = malloc(128);
     sprintf(uri, "%s/%s/%d", namespace, inet_ntoa(ip_src->sin_addr), ip_src->sin_port);
-    printf("uri for sub %s\n", uri);
+    printf("BIND uri for sub %s\n", uri);
     socket_uris[socket] = uri;
 
     return orig_bind(socket, address, address_len);
@@ -198,9 +218,11 @@ ssize_t recv(int sockfd, void *buf, size_t len, int flags)
 {
     if(!initialized) init();
     printf(">> called recv: socket %d <<\n", sockfd);
-    if (have_fd(sockfd))
+    if (1)
     {
-        subscribe(bw_sock, socket_uris[sockfd], buf, len);
+        //subscribe(bw_sock, socket_uris[sockfd], buf, len);
+        printf("got uri %s\n", socket_uris[sockfd]);
+        return bwread(bw_sock, socket_uris[sockfd], buf, 2048);
     }
     return orig_recv(sockfd, buf, len, flags);
 }
@@ -226,6 +248,8 @@ ssize_t read(int fd, void *buf, size_t count)
     if (have_fd(fd))
     {
         //subscribe(bw_sock, socket_uris[fd], buf, count);
+        printf("got uri %s\n", socket_uris[fd]);
+        return bwread(bw_sock, socket_uris[fd], buf, 2048);
     }
     return orig_read(fd, buf, count);
 }
@@ -244,7 +268,14 @@ ssize_t write(int fd, const void *buf, size_t count)
 int close(int fd)
 {
     if(!initialized) init();
-    printf(">> called close <<\n");
+    printf(">> called close: fd %d -> with pid %d<<\n", fd, socket_pids[fd]);
+    pid_t pid;
+    int errno;
+    if (socket_pids[fd] > 0)
+    {
+        kill(socket_pids[fd], SIGKILL);
+    }
+    //waitpid(socket_pids[fd], NULL, 0);
     return orig_close(fd);
 }
 
@@ -253,12 +284,38 @@ int accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen)
     if(!initialized) init();
     printf(">> called accept: socket %d<<\n", sockfd);
     int incoming_fd = orig_accept(sockfd, addr, addrlen);
-    add_fd(incoming_fd);
+    int dummy_fd = add_fd(incoming_fd);
+    printf(">> generated dummy fd %d\n", dummy_fd);
     struct sockaddr_in *ip_src = (struct sockaddr_in*)addr;
     char uri[128];
     sprintf(uri, "%s/%s/%d", namespace, inet_ntoa(ip_src->sin_addr), ip_src->sin_port);
-    printf("uri for sub %s\n", uri);
-    return incoming_fd;
+    printf("ACCEPT uri for sub %s\n", uri);
+    socket_uris[incoming_fd] = uri;
+    socket_uris[dummy_fd] = uri;
+
+    pid_t childPID = fork();
+    socket_pids[dummy_fd] = childPID;
+    if (childPID == 0) // inside child
+    {
+        char buf[512];
+        int num_read;
+        subscribe(bw_sock, socket_uris[sockfd]);
+        while (1) {
+            if (num_read=bwread(bw_sock, socket_uris[sockfd], buf, 2048) > 0)
+            {
+                printf("subscribe read %d bytes\n", num_read);
+                orig_write(dummy_fd, buf, num_read);
+                printf("written\n");
+            }
+        }
+    } 
+    else if (childPID < 0) // error
+    {
+        printf("couldn't fork!\n");
+    }
+    printf("Forked child %d for fd %d\n", childPID, dummy_fd);
+
+    return dummy_fd;
 }
 
 int connect (int sockfd, const struct sockaddr *addr, socklen_t addrlen)
@@ -297,24 +354,33 @@ static int publish(int bw_sock, const char *uri, const void *data, size_t count)
 }
 
 //ssize_t read(int fd, void *buf, size_t count)
-static int subscribe(int bw_sock, const char *uri, void *data, size_t count)
+static int subscribe(int bw_sock, const char *uri)
 {
-    char buf[512+count];
+    char buf[512];
     int written = 0;
     written += sprintf(buf, "subs %010d %010d\n", 0, 2);
     written += sprintf(buf+written, "kv uri %zd\n%s\n", strlen(uri), uri);
     written += sprintf(buf+written, "kv autochain 4\ntrue\n");
     written += sprintf(buf+written, "kv unpack 4\ntrue\n");
-    written += sprintf(buf+written, "\nend\n");
+    written += sprintf(buf+written, "end\n");
     if (orig_write(bw_sock, buf, written) != written)
     {
         printf("Unsuccessfully wrote subscribe to router\n");
     }
+    printf("%.*s",written,buf);
 
     int numread = 0;
-    while (numread == 0)
-    {
-        numread = orig_read(bw_sock, buf, 1024);
-    }
-    printf("from bw sock>>>%.*s",numread,buf);
+    numread = orig_read(bw_sock, buf, 1024);
+    helpme(buf);
+    memset(buf, 0, sizeof(buf));
+    printf("parsed subscription\n");
+    return 0;
+}
+
+static int bwread(int bw_sock, const char *uri, void *data, size_t count)
+{
+    char buf[512+count];
+    int numread = 0;
+    numread = orig_read(bw_sock, buf, 1024);
+    return doread(buf, count);
 }
