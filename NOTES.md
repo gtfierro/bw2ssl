@@ -1,3 +1,10 @@
+## Running it
+
+Prefix your apps with
+```
+LD_PRELOAD=./bw2ssl.so LD_LIBRARY_PATH=.
+```
+
 ## Reading
 
 It doesn't seem possible to intercept `read` when using the `LD_PRELOAD` in /bin/nc.
