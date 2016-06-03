@@ -29,10 +29,13 @@ static int (*orig_poll)(struct pollfd *fds, nfds_t nfds, int timeout);
 static int (*orig_listen)(int sockfd, int backlog);
 static ssize_t (*orig_read)(int fd, void *buf, size_t count);
 static ssize_t (*orig_write)(int fd, const void *buf, size_t count);
+static ssize_t (*orig_sendto)(int sockfd, const void *buf, size_t len, int flags,
+                       const struct sockaddr *dest_addr, socklen_t addrlen);
 static int (*orig_close)(int fd);
 static int (*orig_accept)(int sockfd, struct sockaddr *addr, socklen_t *addrlen);
 static int (*orig_connect)(int sockfd, const struct sockaddr *addr,
                    socklen_t addrlen);
+static int (*orig_shutdown)(int sockfd, int how);
 
 static int publish(int bw_sock, const char *uri, const void *data, size_t count);
 static int subscribe(int bw_sock, const char *uri);
@@ -84,9 +87,11 @@ static void init(void)
     orig_read=dlsym(RTLD_NEXT, "read");
     orig_poll=dlsym(RTLD_NEXT, "poll");
     orig_write=dlsym(RTLD_NEXT, "write");
+    orig_sendto=dlsym(RTLD_NEXT, "sendto");
     orig_close=dlsym(RTLD_NEXT, "close");
     orig_accept=dlsym(RTLD_NEXT, "accept");
     orig_connect=dlsym(RTLD_NEXT, "connect");
+    orig_shutdown=dlsym(RTLD_NEXT, "shutdown");
 
     signal(SIGINT, sig_handler);
 
@@ -199,7 +204,7 @@ int bind(int socket, const struct sockaddr *address, socklen_t address_len)
     struct sockaddr_in *ip_src = (struct sockaddr_in*)address;
     //TODO: free this on close
     char *uri = malloc(128);
-    sprintf(uri, "%s/%s/%d", namespace, inet_ntoa(ip_src->sin_addr), ip_src->sin_port);
+    sprintf(uri, "%s/%s/%d", namespace, "128.32.37.209", ip_src->sin_port);
     printf("BIND uri for sub %s\n", uri);
     socket_uris[socket] = uri;
 
@@ -265,6 +270,18 @@ ssize_t write(int fd, const void *buf, size_t count)
     return orig_write(fd, buf, count);
 }
 
+ssize_t sendto(int sockfd, const void *buf, size_t len, int flags, const struct sockaddr *dest_addr, socklen_t addrlen) {
+    if(!initialized) init();
+    printf(">> called sendto: fd %d <<\n", sockfd);
+    struct sockaddr_in *ip_dst = (struct sockaddr_in*)dest_addr;
+    char *uri = malloc(128);
+    // TODO: probably switch to inet_ntop to handle both ipv4, ipv6
+    sprintf(uri, "%s/%s/%d", namespace, inet_ntoa(ip_dst->sin_addr), ip_dst->sin_port);
+    printf("uri for sendto pub %s\n", uri);
+    socket_uris[sockfd] = uri;
+    publish(bw_sock, socket_uris[sockfd], buf, len);
+}
+
 int close(int fd)
 {
     if(!initialized) init();
@@ -287,9 +304,9 @@ int accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen)
     int dummy_fd = add_fd(incoming_fd);
     printf(">> generated dummy fd %d\n", dummy_fd);
     struct sockaddr_in *ip_src = (struct sockaddr_in*)addr;
-    char uri[128];
-    sprintf(uri, "%s/%s/%d", namespace, inet_ntoa(ip_src->sin_addr), ip_src->sin_port);
-    printf("ACCEPT uri for sub %s\n", uri);
+    char *uri = malloc(128);
+    sprintf(uri, "%s/%s/%d", namespace, "128.32.37.209", ip_src->sin_port);
+    printf("ACCEPT uri for sub %s for fds %d %d\n", uri, incoming_fd, dummy_fd);
     socket_uris[incoming_fd] = uri;
     socket_uris[dummy_fd] = uri;
 
@@ -335,6 +352,11 @@ int connect (int sockfd, const struct sockaddr *addr, socklen_t addrlen)
     printf("uri for pub %s\n", uri);
     socket_uris[sockfd] = uri;
     return orig_connect(sockfd, addr, addrlen);
+}
+int shutdown(int sockfd, int how)
+{
+    if(!initialized) init();
+    return 0;
 }
 
 
